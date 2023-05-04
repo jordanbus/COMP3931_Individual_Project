@@ -6,6 +6,7 @@ import cv2
 import data_augmentation as da
 from tensorflow.keras.utils import Sequence
 from sklearn.model_selection import train_test_split
+import tensorflow as tf
 
 # Define the directories where the scans are located
 TRAIN_DATASET_PATH = '/content/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData/'
@@ -123,7 +124,7 @@ def _frac_tumours(id):
 class DataGenerator(Sequence):
     'Generates data for Keras'
 
-    def __init__(self, list_IDs, data_path, file_path_prefix, n_classes, modalities=['flair', 't1ce', 't2', 't1'], seed=-1, slice_range=100, slice_start=22,  slice_interval=1, to_fit=True, batch_size=1, dim=(128, 128), shuffle=True, augment=True):
+    def __init__(self, list_IDs, data_path, file_path_prefix, n_classes, modalities=['flair', 't1ce', 't2', 't1'], seed=-1, slice_range=100, slice_start=22,  slice_interval=1, to_fit=True, batch_size=1, dim=(128, 128), shuffle=True, augment=True, one_hot=False):
         'Initialization'
         self.list_IDs = list_IDs
         self.data_path = data_path
@@ -140,6 +141,9 @@ class DataGenerator(Sequence):
         self.shuffle = shuffle
         self.augment = augment
         self.slice_offset = 0
+        # if n_classes is one, assume binary classifier
+        self.classifier = 'binary' if n_classes == 1 else 'multilabel'
+        self.one_hot = one_hot
         if seed >= 0:
             np.random.seed = seed
         self.on_epoch_end()
@@ -168,6 +172,26 @@ class DataGenerator(Sequence):
 
         return self._generate_data(list_IDs_temp)
 
+    def _create_single_binary_mask(self, mask, labels, slice_index, scan_id):
+        # Generate a single binary mask for whole tumour
+        labels[slice_index + self.slice_range*scan_id //
+               self.slice_interval, :, :] = (mask > 0).astype(int)
+        return labels
+
+    def _create_one_hot_encoded_mask(self, masks, labels, slice_index, scan_id):
+        # Generate one-hot encoded masks
+        labels[slice_index + self.slice_range*scan_id // self.slice_interval,
+               :, :] = tf.one_hot(masks, self.n_classes)
+        return labels
+
+    def _create_binary_mask_per_class(self, masks, labels, slice_index, scan_id):
+        # Generate binary masks for each class
+        for c in range(self.n_classes):
+            labels[slice_index + self.slice_range*scan_id//self.slice_interval,
+                   :, :, c] = (masks == c).astype(int)
+
+        return labels
+
     def _generate_data(self, list_IDs_temp):
         """Generates data containing batch_size images, and batch_size masks if to_fit
         :param list_IDs_temp: list of label ids to load
@@ -177,6 +201,10 @@ class DataGenerator(Sequence):
                         self.slice_interval, self.dim[0], self.dim[1], self.n_channels))
         labels = np.zeros((self.batch_size*self.slice_range //
                           self.slice_interval, self.dim[0], self.dim[1], self.n_classes))
+
+        if self.classifier == 'binary':
+            labels = np.zeros((self.batch_size*self.slice_range //
+                               self.slice_interval, self.dim[0], self.dim[1]))
 
         # Generate data
         for i, ID in enumerate(list_IDs_temp):
@@ -196,11 +224,18 @@ class DataGenerator(Sequence):
                     if self.augment:
                         modality_images, masks = da.perform_data_augmentation(
                             modality_images, masks)
-                    # Generate binary masks for each class
+                    # Generate masks
                     masks = cv2.resize(masks, (self.dim[0], self.dim[1]))
-                    for c in range(self.n_classes):
-                        labels[j + self.slice_range*i//self.slice_interval,
-                               :, :, c] = (masks == c).astype(int)
+                    if self.classifier == 'binary':
+                        labels = self._create_single_binary_mask(
+                            masks, labels, j, i)
+                    elif self.classifier == 'multilabel':
+                        if self.one_hot:
+                            labels = self._create_one_hot_encoded_mask(
+                                masks, labels, j, i)
+                        else:
+                            labels = self._create_binary_mask_per_class(
+                                masks, labels, j, i)
 
                 for chan, modality in enumerate(self.modalities):
                     data[j + self.slice_range*i//self.slice_interval, :, :,
@@ -238,13 +273,12 @@ class DataGenerator(Sequence):
 
 
 # Create generators for training and validation
-def create_training_gen(train_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, augment=True, seed=-1):
-    return DataGenerator(train_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
+def create_training_gen(train_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, augment=True, seed=-1):
+    return DataGenerator(train_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
 
 
-def create_test_gen(test_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, augment=True, seed=-1):
-
-    return DataGenerator(test_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
+def create_test_gen(test_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, augment=True, seed=-1):
+    return DataGenerator(test_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
 
 
 def create_validation_gen(val_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, augment=True, seed=-1):

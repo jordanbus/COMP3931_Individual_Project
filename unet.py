@@ -4,7 +4,7 @@ from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dropout, BatchNormaliz
 
 
 # Architecture inspired by DigitalSrini's U-Net tutorial at https://youtu.be/68HR_eyzk00
-def create_unet(inputs, loss="categorical_crossentropy", num_filters=32, num_classes=1, kernel_initializer='he_normal', dropout_rate=0.2, metrics=['accuracy'], compile=True):
+def create_unet(inputs, loss="categorical_crossentropy", activation='sigmoid', num_filters=32, num_classes=1, kernel_initializer='he_normal', dropout_rate=0.2, metrics=['accuracy'], compile=True):
     def encode_conv(inputs, filters):
         conv = Conv2D(filters, (3,3), activation='relu', kernel_initializer=kernel_initializer, padding='same')(inputs)
         conv = BatchNormalization()(conv)
@@ -46,7 +46,7 @@ def create_unet(inputs, loss="categorical_crossentropy", num_filters=32, num_cla
     up9 = decode_conv(up8, conv1, num_filters, concat_axis=3)
 
     # Use sigmoid activation since using binary classification per class
-    outputs = Conv2D(num_classes, (1,1), activation='sigmoid')(up9)
+    outputs = Conv2D(num_classes, (1,1), activation=activation)(up9)
 
     model = Model(inputs=inputs, outputs=outputs)
     

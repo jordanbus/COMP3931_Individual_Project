@@ -2,14 +2,15 @@ import lime
 from lime import lime_image
 from skimage.segmentation import mark_boundaries
 import matplotlib.pyplot as plt
-from train_model import UNetModel, MODALITIES, SEGMENT_CLASSES
+from train_model import UNetModel, MODALITIES
 from dataset import create_test_gen, get_train_test_ids_completed
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage.segmentation import mark_boundaries
 from skimage.segmentation import felzenszwalb, slic, quickshift, watershed
 
-
+    
+    
 class LimeXAI:
     def __init__(self, model):
         # Model should be of class UNetModel
@@ -44,7 +45,7 @@ class LimeXAI:
         nsamples, nx, ny = mask.shape
         return mask.reshape((nsamples,nx*ny))
     
-    def explain(self, sample, num_samples=100, visualize=False, segmentation_fn=None):
+    def explain(self, sample, num_samples=100, visualize=False, segmentation_fn=None, segment_classes=None):
         image = self.X_test[sample]
         if image.shape[-1] == 2:
             image = np.stack((image[...,0],image[...,1],image[...,0]), axis=-1) 
@@ -61,11 +62,11 @@ class LimeXAI:
         )
         
         if visualize:
-            self._visualize_explanation(sample, explanation)
+            self._visualize_explanation(sample, explanation, segment_classes=segment_classes)
             
         return explanation
     
-    def _visualize_explanation(self, sample, explanation):
+    def _visualize_explanation(self, sample, explanation, segment_classes=None):
         gt_colors = np.array([[0, 0, 0, 0], [255, 0, 0, 100], [0, 255, 0, 100], [0, 0, 255, 100]])
         pred_colors = np.array([[0, 0, 0, 0], [122, 200, 0, 100], [34, 56, 40, 100], [0, 43, 150, 100]])
         
@@ -135,12 +136,14 @@ class LimeXAI:
                 axarr[0].imshow(mask, cmap='jet', alpha=0.5)
                 axarr[1].imshow(mask, cmap='jet', alpha=0.5)
                 axarr[2].imshow(mask, alpha=0.5)
-                print(SEGMENT_CLASSES[i])
+                # if segment_classes is not None:
+                    # print(segment_classes[i])
             else:
                 print("WHOLE Tumour")
             
         # plt.axis('off')
-        # plt.title(SEGMENT_CLASSES[i])
+        if segment_classes is not None:
+            plt.title(segment_classes[i])
         plt.show()
 
     

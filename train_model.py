@@ -4,7 +4,7 @@ from unet import create_unet
 from tensorflow.keras.models import load_model
 from tensorflow.keras.layers import Input
 from tensorflow.keras.optimizers import Adam
-from metrics import MultilabelMetrics
+from metrics import MultilabelMetrics, BinaryMetrics
 import os
 import numpy as np
 import cv2
@@ -32,24 +32,45 @@ callbacks = [
 
 
 class UNetModel:
-    def __init__(self, models_path, model_index=None):
-        self.n_channels = IMG_CHANNELS
-        self.n_classes = NUM_CLASSES
-        self.metric_funcs = MultilabelMetrics(CLASS_WEIGHTS)
+    def __init__(self, 
+                models_path, 
+                model_index=None, 
+                activation='sigmoid',
+                modalities=MODALITIES, 
+                n_classes=NUM_CLASSES,
+                class_weights=CLASS_WEIGHTS,
+                 ):
+        self.n_channels = len(modalities)
+        self.class_weights = class_weights
+        self.n_classes = n_classes
+        if self.n_classes == 1:
+            print("Using binary metrics")
+            self.metric_funcs = BinaryMetrics()
+            self.metrics = ['accuracy',
+                            self.metric_funcs.sensitivity,
+                            self.metric_funcs.specificity,]
+        else:
+            print("Using multilabel metrics")
+            self.metric_funcs = MultilabelMetrics(class_weights)
+            self.metrics = ['accuracy',
+                        self.metric_funcs.sensitivity,
+                        self.metric_funcs.specificity,
+                        self.metric_funcs.binary_cross_entropy_per_channel,
+                        self.metric_funcs.dice_loss,
+                        self.metric_funcs.dice_coef_necrotic,
+                        self.metric_funcs.dice_coef_edema,
+                        self.metric_funcs.dice_coef_enhancing]
         self.models_path = models_path
-        self.metrics = ['accuracy',
-                           self.metric_funcs.sensitivity,
-                           self.metric_funcs.specificity,
-                           self.metric_funcs.binary_cross_entropy_per_channel,
-                           self.metric_funcs.dice_loss,
-                           self.metric_funcs.dice_coef_necrotic,
-                           self.metric_funcs.dice_coef_edema,
-                           self.metric_funcs.dice_coef_enhancing]
+        self.activation = activation
+        self.modalities = modalities
+        
         self.model = self.load_model(
             model_index) if model_index is not None else None
-        
+
     def compile_model(self):
-        self.model.compile(loss=self.metric_funcs.combined_loss, optimizer=Adam(learning_rate=1e-3), metrics = self.metrics)
+        loss = 'categorical_crossentropy' if self.activation == 'softmax' else self.metric_funcs.combined_loss
+        self.model.compile(loss=loss, optimizer=Adam(
+            learning_rate=1e-3), metrics=self.metrics)
 
     def load_model(self, job_index=None, model_path=None, compile=True):
         if model_path is None and job_index is None:
@@ -58,19 +79,30 @@ class UNetModel:
         model_path = model_path if model_path is not None else os.path.join(
             self.models_path, "model_job{}".format(job_index))
 
-        self.model = load_model(model_path, custom_objects={
-            "combined_loss": self.metric_funcs.combined_loss,
-            "dice_loss": self.metric_funcs.dice_loss,
-            "dice_coef_necrotic": self.metric_funcs.dice_coef_necrotic,
-            "dice_coef_edema": self.metric_funcs.dice_coef_edema,
-            "dice_coef_enhancing": self.metric_funcs.dice_coef_enhancing,
-            "sensitivity": self.metric_funcs.sensitivity,
-            "specificity": self.metric_funcs.specificity,
-            "binary_cross_entropy_per_channel": self.metric_funcs.binary_cross_entropy_per_channel
-        }, compile=compile)
+        if self.n_classes > 1:
+            custom_objects = {
+                "dice_loss": self.metric_funcs.dice_loss,
+                "dice_coef_necrotic": self.metric_funcs.dice_coef_necrotic,
+                "dice_coef_edema": self.metric_funcs.dice_coef_edema,
+                "dice_coef_enhancing": self.metric_funcs.dice_coef_enhancing,
+                "sensitivity": self.metric_funcs.sensitivity,
+                "specificity": self.metric_funcs.specificity,
+                "binary_cross_entropy_per_channel": self.metric_funcs.binary_cross_entropy_per_channel
+            }
+        else:
+             custom_objects = {
+                "sensitivity": self.metric_funcs.sensitivity,
+                "specificity": self.metric_funcs.specificity,
+            }
+
+        if self.activation != 'softmax':
+            custom_objects['combined_loss'] = self.metric_funcs.combined_loss
+
+        self.model = load_model(
+            model_path, custom_objects=custom_objects, compile=compile)
 
     # Starts or resumes training of the model for job's fraction of total n_epochs
-    def train_model(self, job_index, n_jobs, n_epochs):
+    def train_model(self, job_index, n_jobs, n_epochs, batch_size = BATCH_SIZE):
         for i in range(job_index, n_jobs):
             job_index = i
 
@@ -82,19 +114,20 @@ class UNetModel:
             if start_epoch == 0:
                 inputs = Input((IMG_SIZE, IMG_SIZE, self.n_channels))
                 self.model = create_unet(
-                    inputs, num_classes=self.n_classes, loss=self.metric_funcs.combined_loss, metrics=self.metrics)
+                    inputs, activation=self.activation, num_classes=self.n_classes, loss=self.metric_funcs.combined_loss, metrics=self.metrics)
             else:
                 # Load previous model to continue training
                 load_model(job_index-1)
 
-        training_gen = create_training_gen(train_ids, slice_range=100, slice_start=22, slice_interval=5,
-                                           modalities=MODALITIES, batch_size=BATCH_SIZE, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
-        test_gen = create_test_gen(test_ids, slice_range=100, slice_start=22, slice_interval=5,
-                                   modalities=MODALITIES, batch_size=BATCH_SIZE, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+        one_hot = self.activation == 'softmax'
+        training_gen = create_training_gen(train_ids, one_hot=one_hot, slice_range=100, slice_start=22, slice_interval=5,
+                                           modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+        test_gen = create_test_gen(test_ids, one_hot=one_hot, slice_range=100, slice_start=22, slice_interval=5,
+                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
 
         self.model.fit(training_gen,
                        epochs=end_epoch,
-                       steps_per_epoch=len(train_ids)/BATCH_SIZE,
+                       steps_per_epoch=len(train_ids)/batch_size,
                        initial_epoch=start_epoch,
                        callbacks=callbacks,
                        validation_data=test_gen)
@@ -103,20 +136,20 @@ class UNetModel:
         self.model.save(model_filename)
 
     # Evaluates the model on the test set
-    def evaluate_model(self):
+    def evaluate_model(self, batch_size=BATCH_SIZE):
         if self.model is None:
             print("Model not loaded")
         test_gen = create_test_gen(test_ids, slice_range=100, slice_start=22, slice_interval=5,
-                                   modalities=MODALITIES, batch_size=BATCH_SIZE, dim=(IMG_SIZE, IMG_SIZE), n_classes=NUM_CLASSES)
-        self.model.evaluate(test_gen, steps=len(test_ids)/BATCH_SIZE)
+                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+        self.model.evaluate(test_gen, steps=len(test_ids)/batch_size)
 
     # Predicts the segmentation of the given images
     def predict(self, images):
         X = np.empty(images.shape)
         for i in range(images.shape[0]):
             for chan in range(self.n_channels):
-                X[i,..., chan] = cv2.resize(
-                    images[i,..., chan], (IMG_SIZE, IMG_SIZE))
+                X[i, ..., chan] = cv2.resize(
+                    images[i, ..., chan], (IMG_SIZE, IMG_SIZE))
 
         X = X/np.max(X)
         return self.model.predict(X)
