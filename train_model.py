@@ -1,5 +1,5 @@
 from tensorflow.keras.callbacks import ReduceLROnPlateau
-from dataset import get_train_test_ids_completed, create_training_gen, create_test_gen
+from dataset import get_train_test_ids_completed, create_training_gen, create_test_gen, create_validation_gen, get_val_ids_completed
 from unet import create_unet
 from tensorflow.keras.models import load_model
 from tensorflow.keras.layers import Input
@@ -22,8 +22,6 @@ NUM_CLASSES = len(SEGMENT_CLASSES)
 CLASS_WEIGHTS = [1, 10, 10, 10]
 MODALITIES = ['flair', 't1ce']
 IMG_CHANNELS = len(MODALITIES)
-train_ids, test_ids = get_train_test_ids_completed(mri_types=['flair', 't1ce'])
-
 callbacks = [
     # EarlyStopping(monitor='loss', min_delta=0, patience=2, verbose=1, mode='auto'),
     ReduceLROnPlateau(monitor='val_loss', factor=0.2,
@@ -32,14 +30,21 @@ callbacks = [
 
 
 class UNetModel:
-    def __init__(self, 
-                models_path, 
-                model_index=None, 
-                activation='sigmoid',
-                modalities=MODALITIES, 
-                n_classes=NUM_CLASSES,
-                class_weights=CLASS_WEIGHTS,
+    def __init__(self,
+                 models_path,
+                 model_index=None,
+                 activation='sigmoid',
+                 modalities=MODALITIES,
+                 n_classes=NUM_CLASSES,
+                 class_weights=CLASS_WEIGHTS,
+                 slice_interval=5,
+                 slice_range=100,
+                 slice_start=22
                  ):
+        
+        self.slice_interval = slice_interval
+        self.slice_range = slice_range
+        self.slice_start = slice_start
         self.n_channels = len(modalities)
         self.class_weights = class_weights
         self.n_classes = n_classes
@@ -53,17 +58,20 @@ class UNetModel:
             print("Using multilabel metrics")
             self.metric_funcs = MultilabelMetrics(class_weights)
             self.metrics = ['accuracy',
-                        self.metric_funcs.sensitivity,
-                        self.metric_funcs.specificity,
-                        self.metric_funcs.binary_cross_entropy_per_channel,
-                        self.metric_funcs.dice_loss,
-                        self.metric_funcs.dice_coef_necrotic,
-                        self.metric_funcs.dice_coef_edema,
-                        self.metric_funcs.dice_coef_enhancing]
+                            self.metric_funcs.sensitivity,
+                            self.metric_funcs.specificity,
+                            self.metric_funcs.binary_cross_entropy_per_channel,
+                            self.metric_funcs.dice_loss,
+                            self.metric_funcs.dice_coef_necrotic,
+                            self.metric_funcs.dice_coef_edema,
+                            self.metric_funcs.dice_coef_enhancing]
         self.models_path = models_path
         self.activation = activation
         self.modalities = modalities
         
+        self.train_ids,self.test_ids = get_train_test_ids_completed(mri_types=modalities)
+        self.validation_ids = get_val_ids_completed(mri_types=modalities)
+
         self.model = self.load_model(
             model_index) if model_index is not None else None
 
@@ -90,7 +98,7 @@ class UNetModel:
                 "binary_cross_entropy_per_channel": self.metric_funcs.binary_cross_entropy_per_channel
             }
         else:
-             custom_objects = {
+            custom_objects = {
                 "sensitivity": self.metric_funcs.sensitivity,
                 "specificity": self.metric_funcs.specificity,
             }
@@ -102,7 +110,7 @@ class UNetModel:
             model_path, custom_objects=custom_objects, compile=compile)
 
     # Starts or resumes training of the model for job's fraction of total n_epochs
-    def train_model(self, job_index, n_jobs, n_epochs, batch_size = BATCH_SIZE):
+    def train_model(self, job_index, n_jobs, n_epochs, batch_size=BATCH_SIZE):
         for i in range(job_index, n_jobs):
             job_index = i
 
@@ -120,14 +128,14 @@ class UNetModel:
                 load_model(job_index-1)
 
         one_hot = self.activation == 'softmax'
-        training_gen = create_training_gen(train_ids, one_hot=one_hot, slice_range=100, slice_start=22, slice_interval=5,
+        training_gen = create_training_gen(self.train_ids, one_hot=one_hot, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
                                            modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
-        test_gen = create_test_gen(test_ids, one_hot=one_hot, slice_range=100, slice_start=22, slice_interval=5,
+        test_gen = create_test_gen(self.test_ids, one_hot=one_hot, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
                                    modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
 
         self.model.fit(training_gen,
                        epochs=end_epoch,
-                       steps_per_epoch=len(train_ids)/batch_size,
+                       steps_per_epoch=len(self.train_ids)/batch_size,
                        initial_epoch=start_epoch,
                        callbacks=callbacks,
                        validation_data=test_gen)
@@ -139,9 +147,18 @@ class UNetModel:
     def evaluate_model(self, batch_size=BATCH_SIZE):
         if self.model is None:
             print("Model not loaded")
-        test_gen = create_test_gen(test_ids, slice_range=100, slice_start=22, slice_interval=5,
+        test_gen = create_test_gen(self.test_ids, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
                                    modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
-        self.model.evaluate(test_gen, steps=len(test_ids)/batch_size)
+        self.model.evaluate(test_gen, steps=len(self.test_ids)/batch_size)
+        
+    def validation_predictions(self, batch_size=BATCH_SIZE, slice_interval=None):
+        if slice_interval is None:
+            slice_interval = self.slice_interval
+        if self.model is None:
+            print("Model not loaded")
+        val_gen = create_validation_gen(self.validation_ids, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=slice_interval,
+                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+        self.model.predict(val_gen, steps=len(self.validation_ids)/batch_size)
 
     # Predicts the segmentation of the given images
     def predict(self, images):
