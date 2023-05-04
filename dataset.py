@@ -277,9 +277,9 @@ def create_training_gen(train_ids, modalities, n_classes, batch_size, dim, slice
     return DataGenerator(train_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
 
 
-def create_test_gen(test_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, augment=True, seed=-1):
-    return DataGenerator(test_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
+def create_test_gen(test_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, seed=-1):
+    return DataGenerator(test_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=False, seed=seed)
 
 
-def create_validation_gen(val_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, augment=True, seed=-1):
-    return DataGenerator(val_ids, VALIDATION_DATASET_PATH, 'BraTS20_Validation', n_classes, modalities, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
+def create_validation_gen(val_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, seed=-1):
+    return DataGenerator(val_ids, VALIDATION_DATASET_PATH, 'BraTS20_Validation', n_classes, modalities, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, to_fit=False, seed=seed)
