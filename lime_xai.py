@@ -45,7 +45,7 @@ class LimeXAI:
         nsamples, nx, ny = mask.shape
         return mask.reshape((nsamples,nx*ny))
     
-    def explain(self, sample, num_samples=100, visualize=False, segmentation_fn=None, segment_classes=None):
+    def explain(self, sample, num_samples=100, visualize=False, segmentation_fn=None, segment_classes=None, seed=None):
         image = self.X_test[sample]
         if image.shape[-1] == 2:
             image = np.stack((image[...,0],image[...,1],image[...,0]), axis=-1) 
@@ -58,7 +58,8 @@ class LimeXAI:
                 top_labels=self.model.n_classes,
                 segmentation_fn=felzenszwalb,
                 #  hide_color=0,
-                num_samples=num_samples
+                num_samples=num_samples,
+                random_state=seed,
         )
         
         if visualize:
@@ -93,7 +94,7 @@ class LimeXAI:
                 img, mask = explanation.get_image_and_mask(
                         explanation.top_labels[i],
                         positive_only=True,
-                        hide_rest=True
+                        hide_rest=True,
                 )
             else:
                 gt_sm = gt_sm_whole
