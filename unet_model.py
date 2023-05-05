@@ -4,7 +4,8 @@ from unet import create_unet
 from tensorflow.keras.models import load_model
 from tensorflow.keras.layers import Input
 from tensorflow.keras.optimizers import Adam
-from metrics import MultilabelMetrics, BinaryMetrics
+import binary_metrics as bm
+import multiclass_metrics as mcm
 import os
 import numpy as np
 import cv2
@@ -23,7 +24,6 @@ CLASS_WEIGHTS = [1, 10, 10, 10]
 MODALITIES = ['flair', 't1ce']
 IMG_CHANNELS = len(MODALITIES)
 callbacks = [
-    # EarlyStopping(monitor='loss', min_delta=0, patience=2, verbose=1, mode='auto'),
     ReduceLROnPlateau(monitor='val_loss', factor=0.2,
                       patience=2, min_lr=0.000001, verbose=1),
 ]
@@ -32,52 +32,61 @@ callbacks = [
 class UNetModel:
     def __init__(self,
                  models_path,
+                 loss='combined_loss',
                  model_index=None,
-                 activation='sigmoid',
                  modalities=MODALITIES,
-                 n_classes=NUM_CLASSES,
+                 segment_classes=SEGMENT_CLASSES,
                  class_weights=CLASS_WEIGHTS,
                  slice_interval=5,
                  slice_range=100,
-                 slice_start=22
+                 slice_start=22,
+                 seed=-1
                  ):
-        
+        self.seed = seed
         self.slice_interval = slice_interval
         self.slice_range = slice_range
         self.slice_start = slice_start
         self.n_channels = len(modalities)
         self.class_weights = class_weights
-        self.n_classes = n_classes
+        self.segment_classes = segment_classes
+        self.n_classes = len(segment_classes)
+        self.loss = loss
         if self.n_classes == 1:
             print("Using binary metrics")
-            self.metric_funcs = BinaryMetrics()
             self.metrics = ['accuracy',
-                            self.metric_funcs.sensitivity,
-                            self.metric_funcs.specificity,]
+                            bm.sensitivity,
+                            bm.specificity,
+                            bm.dice_loss,
+                            bm.combined_loss_wrapper()]
+            if loss == 'combined_loss':
+                self.loss = bm.combined_loss_wrapper()
         else:
             print("Using multilabel metrics")
-            self.metric_funcs = MultilabelMetrics(class_weights)
             self.metrics = ['accuracy',
-                            self.metric_funcs.sensitivity,
-                            self.metric_funcs.specificity,
-                            self.metric_funcs.binary_cross_entropy_per_channel,
-                            self.metric_funcs.dice_loss,
-                            self.metric_funcs.dice_coef_necrotic,
-                            self.metric_funcs.dice_coef_edema,
-                            self.metric_funcs.dice_coef_enhancing]
+                            mcm.sensitivity,
+                            mcm.specificity,
+                            mcm.binary_cross_entropy_per_channel_wrapper(self.class_weights),
+                            mcm.dice_loss_wrapper(self.class_weights),
+                            mcm.dice_coef_necrotic,
+                            mcm.dice_coef_edema,
+                            mcm.dice_coef_enhancing,
+                            mcm.combined_loss_wrapper(self.class_weights)]
+            if loss == 'combined_loss':
+                self.loss = mcm.combined_loss_wrapper(self.class_weights)
+
         self.models_path = models_path
-        self.activation = activation
+        self.activation = 'softmax' if loss == 'categorical_crossentropy' else 'sigmoid'
         self.modalities = modalities
-        
-        self.train_ids,self.test_ids = get_train_test_ids_completed(mri_types=modalities)
+
+        self.train_ids, self.test_ids = get_train_test_ids_completed(
+            mri_types=modalities)
         self.validation_ids = get_val_ids_completed(mri_types=modalities)
 
         self.model = self.load_model(
             model_index) if model_index is not None else None
 
     def compile_model(self):
-        loss = 'categorical_crossentropy' if self.activation == 'softmax' else self.metric_funcs.combined_loss
-        self.model.compile(loss=loss, optimizer=Adam(
+        self.model.compile(loss=self.loss, optimizer=Adam(
             learning_rate=1e-3), metrics=self.metrics)
 
     def load_model(self, job_index=None, model_path=None, compile=True):
@@ -89,22 +98,22 @@ class UNetModel:
 
         if self.n_classes > 1:
             custom_objects = {
-                "dice_loss": self.metric_funcs.dice_loss,
-                "dice_coef_necrotic": self.metric_funcs.dice_coef_necrotic,
-                "dice_coef_edema": self.metric_funcs.dice_coef_edema,
-                "dice_coef_enhancing": self.metric_funcs.dice_coef_enhancing,
-                "sensitivity": self.metric_funcs.sensitivity,
-                "specificity": self.metric_funcs.specificity,
-                "binary_cross_entropy_per_channel": self.metric_funcs.binary_cross_entropy_per_channel
+                "combined_loss": mcm.combined_loss_wrapper(self.class_weights),
+                "dice_loss": mcm.dice_loss_wrapper(self.class_weights),
+                "dice_coef_necrotic": mcm.dice_coef_necrotic,
+                "dice_coef_edema": mcm.dice_coef_edema,
+                "dice_coef_enhancing": mcm.dice_coef_enhancing,
+                "sensitivity": mcm.sensitivity,
+                "specificity": mcm.specificity,
+                "binary_cross_entropy_per_channel": mcm.binary_cross_entropy_per_channel_wrapper(self.class_weights),
             }
         else:
             custom_objects = {
-                "sensitivity": self.metric_funcs.sensitivity,
-                "specificity": self.metric_funcs.specificity,
+                "combined_loss": bm.combined_loss_wrapper(),
+                "dice_loss": bm.dice_loss,
+                "sensitivity": bm.sensitivity,
+                "specificity": bm.specificity,
             }
-
-        if self.activation != 'softmax':
-            custom_objects['combined_loss'] = self.metric_funcs.combined_loss
 
         self.model = load_model(
             model_path, custom_objects=custom_objects, compile=compile)
@@ -118,20 +127,22 @@ class UNetModel:
             end_epoch = (job_index + 1) * n_epochs // n_jobs
 
             # Load the model from a file
-            model_filename = "/content/current/model_job{}".format(job_index)
+            model_filename = os.path.join(
+                self.models_path, "model_job{}".format(job_index))
             if start_epoch == 0:
                 inputs = Input((IMG_SIZE, IMG_SIZE, self.n_channels))
                 self.model = create_unet(
-                    inputs, activation=self.activation, num_classes=self.n_classes, loss=self.metric_funcs.combined_loss, metrics=self.metrics)
+                    inputs, activation=self.activation, num_classes=self.n_classes, loss=self.loss, metrics=self.metrics)
             else:
-                # Load previous model to continue training
-                load_model(job_index-1)
+                if self.model is None:
+                    # Load previous model to continue training
+                    load_model(job_index-1)
 
         one_hot = self.activation == 'softmax'
         training_gen = create_training_gen(self.train_ids, one_hot=one_hot, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
-                                           modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+                                           modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes,seed=self.seed)
         test_gen = create_test_gen(self.test_ids, one_hot=one_hot, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
-                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes, seed=self.seed)
 
         self.model.fit(training_gen,
                        epochs=end_epoch,
@@ -148,16 +159,16 @@ class UNetModel:
         if self.model is None:
             print("Model not loaded")
         test_gen = create_test_gen(self.test_ids, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
-                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes, seed=self.seed)
         self.model.evaluate(test_gen, steps=len(self.test_ids)/batch_size)
-        
+
     def validation_predictions(self, batch_size=BATCH_SIZE, slice_interval=None):
         if slice_interval is None:
             slice_interval = self.slice_interval
         if self.model is None:
             print("Model not loaded")
         val_gen = create_validation_gen(self.validation_ids, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=slice_interval,
-                                   modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), n_classes=self.n_classes)
+                                        modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes, seed=self.seed)
         self.model.predict(val_gen, steps=len(self.validation_ids)/batch_size)
 
     # Predicts the segmentation of the given images

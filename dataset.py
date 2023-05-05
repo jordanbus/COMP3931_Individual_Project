@@ -124,13 +124,14 @@ def _frac_tumours(id):
 class DataGenerator(Sequence):
     'Generates data for Keras'
 
-    def __init__(self, list_IDs, data_path, file_path_prefix, n_classes, modalities=['flair', 't1ce', 't2', 't1'], seed=-1, slice_range=100, slice_start=22,  slice_interval=1, to_fit=True, batch_size=1, dim=(128, 128), shuffle=True, augment=True, one_hot=False):
+    def __init__(self, list_IDs, data_path, file_path_prefix, segment_classes, modalities=['flair', 't1ce', 't2', 't1'], seed=-1, slice_range=100, slice_start=22,  slice_interval=1, to_fit=True, batch_size=1, dim=(128, 128), shuffle=True, augment=True, one_hot=False):
         'Initialization'
         self.list_IDs = list_IDs
         self.data_path = data_path
         self.file_path_prefix = file_path_prefix
         self.n_channels = len(modalities)
-        self.n_classes = n_classes
+        self.segment_classes = segment_classes
+        self.n_classes = len(segment_classes)
         self.modalities = modalities
         self.slice_range = slice_range
         self.slice_start = slice_start
@@ -142,7 +143,7 @@ class DataGenerator(Sequence):
         self.augment = augment
         self.slice_offset = 0
         # if n_classes is one, assume binary classifier
-        self.classifier = 'binary' if n_classes == 1 else 'multilabel'
+        self.classifier = 'binary' if self.n_classes == 1 else 'multilabel'
         self.one_hot = one_hot
         if seed >= 0:
             np.random.seed = seed
@@ -180,16 +181,18 @@ class DataGenerator(Sequence):
 
     def _create_one_hot_encoded_mask(self, masks, labels, slice_index, scan_id):
         # Generate one-hot encoded masks
+        # Change GD-Enhancing to label 3 from 4
+        masks[masks == 4] = 3
         labels[slice_index + self.slice_range*scan_id // self.slice_interval,
                :, :] = tf.one_hot(masks, self.n_classes)
         return labels
 
     def _create_binary_mask_per_class(self, masks, labels, slice_index, scan_id):
         # Generate binary masks for each class
-        for c in range(self.n_classes):
+        for c in self.segment_classes.keys():
             labels[slice_index + self.slice_range*scan_id//self.slice_interval,
                    :, :, c] = (masks == c).astype(int)
-
+        
         return labels
 
     def _generate_data(self, list_IDs_temp):
@@ -219,8 +222,6 @@ class DataGenerator(Sequence):
                 if (self.to_fit):
                     masks = scan_data['seg'][:, :, j*self.slice_interval +
                                              self.slice_offset+self.slice_start]
-                    # GD-ENHANCING is labelled as 4, but we change to 3 to make it easier to use iterate over each class
-                    masks[masks == 4] = 3
                     if self.augment:
                         modality_images, masks = da.perform_data_augmentation(
                             modality_images, masks)
@@ -273,13 +274,13 @@ class DataGenerator(Sequence):
 
 
 # Create generators for training and validation
-def create_training_gen(train_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, augment=True, seed=-1):
-    return DataGenerator(train_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed)
+def create_training_gen(train_ids, modalities, segment_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, augment=True, seed=-1, shuffle=True):
+    return DataGenerator(train_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', segment_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed, shuffle=shuffle)
 
 
-def create_test_gen(test_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, seed=-1):
-    return DataGenerator(test_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', n_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=False, seed=seed)
+def create_test_gen(test_ids, modalities, segment_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, seed=-1, shuffle=True):
+    return DataGenerator(test_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', segment_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=False, seed=seed, shuffle=shuffle)
 
 
-def create_validation_gen(val_ids, modalities, n_classes, batch_size, dim, slice_range, slice_start, slice_interval, seed=-1):
-    return DataGenerator(val_ids, VALIDATION_DATASET_PATH, 'BraTS20_Validation', n_classes, modalities, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, to_fit=False, seed=seed)
+def create_validation_gen(val_ids, modalities, segment_classes, batch_size, dim, slice_range, slice_start, slice_interval, seed=-1, shuffle=True):
+    return DataGenerator(val_ids, VALIDATION_DATASET_PATH, 'BraTS20_Validation', segment_classes, modalities, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, to_fit=False, seed=seed, shuffle=shuffle)
