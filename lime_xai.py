@@ -37,6 +37,7 @@ class LimeXAI:
             (images[..., i] for i in range(self.model.n_channels)), axis=-1)
 
         masks = self.model.predict(reverted_images)
+        # masks = (masks > 0.5).astype(int)
 
         nsamples, nx, ny, nc = masks.shape
         return masks.reshape((nsamples, nx*ny*nc))
@@ -59,10 +60,6 @@ class LimeXAI:
         image = self.X_test[sample]
         # Lime expects 3 channels, so duplicate channel for other channels
         if image.shape[-1] == 2:
-            # LIME calculates mean of image channels,
-            # so add a third channel with the mean of the first two so that
-            # mean is calculated correctly (not weighted towards one channel)
-            # mean_img = (img1 + img2) / 2
             if str(duplicate_channel) == 'mean':
                 dup_image = (image[..., 0] + image[..., 1]) / 2
             else:
@@ -78,7 +75,7 @@ class LimeXAI:
             image,
             self.predict_fn,
             top_labels=self.model.n_classes,
-            segmentation_fn=felzenszwalb,
+            segmentation_fn=segmentation_fn,
             #  hide_color=0,
             num_samples=num_samples,
         )
@@ -99,74 +96,65 @@ class LimeXAI:
         predictions = self.model.model.predict(self.X_test)
         prediction = predictions[sample]
 
-        gt_sm_whole = np.zeros(
-            (ground_truth.shape[0], ground_truth.shape[1], 4), dtype=np.uint8)
-        pred_sm_whole = np.zeros(
-            (ground_truth.shape[0], ground_truth.shape[1], 4), dtype=np.uint8)
+        for i in range(self.model.n_classes):
+                
 
-        for i in range(5):
+            # Get the image and mask from the explanation
+            img, mask = explanation.get_image_and_mask(
+                explanation.top_labels[i],
+                positive_only=True,
+                hide_rest=True,
+            )
+           
+
+            
+            pred = (prediction[..., i])
+            
+           # For binary classification, only show the positive class
+            if self.model.n_classes == 1:
+                gt = ground_truth
+                i = 1
+            else:
+                gt = ground_truth[..., i]
+                
+            
             gt_sm = np.zeros(
                 (ground_truth.shape[0], ground_truth.shape[1], 4), dtype=np.uint8)
             pred_sm = np.zeros(
                 (ground_truth.shape[0], ground_truth.shape[1], 4), dtype=np.uint8)
-            if i < 4:
-                gt = (ground_truth[..., i])
-                gt_sm[gt == 1] = gt_colors[i]
-                gt_sm_whole[gt == 1] = gt_colors[1]
-                pred = (prediction[..., i])
-                pred_sm[pred >= 0.5] = pred_colors[i]
-                pred_sm_whole[pred >= 0.5] = pred_colors[1]
+            
+            gt_sm[gt == 1] = gt_colors[i]
+            pred_sm[pred >= 0.8] = pred_colors[i]
 
-                # Get the image and mask from the explanation
-                img, mask = explanation.get_image_and_mask(
-                    explanation.top_labels[i],
-                    positive_only=True,
-                    hide_rest=True,
-                )
-            else:
-                gt_sm = gt_sm_whole
-                pred_sm = pred_sm_whole
-
-            # Get the original images
-            t1ce = image[..., 0]
-            flair = image[..., 1]
-
-            # Overlay the binary mask on the original images
+            f, axarr = plt.subplots(1, self.model.n_channels * 3 + 1, figsize=(18, 50))
             plt.figure(figsize=(18, 50))
-            f, axarr = plt.subplots(1, 6, figsize=(18, 50))
-            axarr[0].imshow(t1ce, cmap='gray')
-            axarr[0].imshow(gt_sm, cmap='jet')
-            axarr[0].set_title('T1ce with GT')
+            for j in range(self.model.n_channels):  
+                # Overlay the binary mask on the original images
+                axarr[j*3].imshow(image[...,j], cmap='gray')
+                axarr[j*3].imshow(gt_sm, cmap='jet')
+                axarr[j*3].set_title('{} with GT'.format(self.model.modalities[j]))
 
-            axarr[1].imshow(t1ce, cmap='gray')
-            axarr[1].imshow(pred_sm, cmap='jet')
-            axarr[1].set_title('T1ce with Pred')
+                axarr[j*3+1].imshow(image[...,j], cmap='gray')
+                axarr[j*3+1].imshow(pred_sm, cmap='jet')
+                # axarr[j*3+1].imshow(mask, cmap='jet', alpha=0.5)
+                axarr[j*3+1].set_title('{} with Pred'.format(self.model.modalities[j]))
+                
+                axarr[j*3+2].imshow(image[...,j], cmap='gray')
+                axarr[j*3+2].imshow(pred_sm, cmap='jet')
+                axarr[j*3+2].imshow(mask, cmap='jet', alpha=0.5)
+                axarr[j*3+2].set_title('{} with Pred + mask'.format(self.model.modalities[j]))
 
-            axarr[2].imshow(flair, cmap='gray')
-            axarr[2].imshow(gt_sm, cmap='jet')
-            axarr[2].set_title('Flair with GT')
+                # axarr[j*2+1].imshow(mark_boundaries(image[...,j], mask))
+                # axarr[j*2+1].set_title('Image + LIME')
 
-            axarr[3].imshow(flair, cmap='gray')
-            axarr[3].imshow(pred_sm, cmap='jet')
-            axarr[3].set_title('Flair with Pred')
-
-            # axarr[4].imshow(pred_sm, cmap='gray')
-            # axarr[4].set_title('Prediction w/ Mask')
-            axarr[4].imshow(mark_boundaries(flair, mask))
-            axarr[4].set_title('Image + LIME')
-
-            # axarr[5].imshow(t1ce, cmap='gray')
-            axarr[5].imshow(gt_sm, cmap='gray')
-            axarr[5].imshow(pred_sm, cmap='jet')
-            axarr[5].set_title('GT vs Prediction')
-            if i < 4:
-                # axarr[0].imshow(mask, cmap='jet', alpha=0.5)
-                axarr[1].imshow(mask, cmap='jet', alpha=0.5)
-                axarr[3].imshow(mask, cmap='jet', alpha=0.5)
-                # if segment_classes is not None:
-                print(self.model.segment_classes[i])
-            else:
-                print("WHOLE Tumour")
+            axarr[-1].imshow(gt_sm, cmap='gray')
+            axarr[-1].imshow(pred_sm, cmap='jet')
+            axarr[-1].set_title('GT vs Prediction')
+            # axarr[0].imshow(mask, cmap='jet', alpha=0.5)
+            # axarr[1].imshow(mask, cmap='jet', alpha=0.5)
+            # axarr[3].imshow(mask, cmap='jet', alpha=0.5)
+            # if segment_classes is not None:
+            print(self.model.segment_classes[i])
 
         # plt.axis('off')
         plt.show()
