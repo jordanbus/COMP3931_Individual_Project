@@ -4,8 +4,7 @@ from unet import create_unet
 from tensorflow.keras.models import load_model
 from tensorflow.keras.layers import Input
 from tensorflow.keras.optimizers import Adam
-import binary_metrics as bm
-import multiclass_metrics as mcm
+from metrics import MulticlassMetrics as mcm, BinaryMetrics as bm
 import os
 import numpy as np
 import cv2

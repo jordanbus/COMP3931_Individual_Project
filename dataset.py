@@ -273,7 +273,7 @@ class DataGenerator(Sequence):
         return scan_data
 
 
-# Create generators for training and validation
+# Create generators for training and validation, including the correct paths for each set
 def create_training_gen(train_ids, modalities, segment_classes, batch_size, dim, slice_range, slice_start, slice_interval, one_hot=False, augment=True, seed=-1, shuffle=True):
     return DataGenerator(train_ids, TRAIN_DATASET_PATH, 'BraTS20_Training', segment_classes, modalities, one_hot=one_hot, slice_range=slice_range, slice_start=slice_start, slice_interval=slice_interval, batch_size=batch_size, dim=dim, augment=augment, seed=seed, shuffle=shuffle)
 
