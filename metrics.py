@@ -126,7 +126,7 @@ class BinaryMetrics:
         tp_fn = K.sum(y_true)
         return tp / (tp_fn + K.epsilon())
 
-    # - Dice coefficient index (*Dci*)
+    # - Dice loss (equal to 1 - Dice coefficient index *Dci*)
     def dice_loss(y_true, y_pred, smooth=1e-6):
         # Flatten the ground truth and predicted masks
         y_true_f = K.flatten(y_true)
@@ -144,6 +144,7 @@ class BinaryMetrics:
 
         return dice_loss
 
+    # Combine dice loss and binary cross entropy loss into a single loss function
     def combined_loss_wrapper(alpha=0.5, smooth=1e-5):
         def combined_loss(y_true, y_pred):
             nonlocal alpha

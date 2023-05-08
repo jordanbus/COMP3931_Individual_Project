@@ -84,6 +84,7 @@ def get_train_test_ids_completed(mri_types, oversample_tumors=False, undersample
                 oversample_id = np.random.choice(oversample_ids)
                 train_ids.append(oversample_id)
 
+    # Use same split every time
     train_ids, test_ids = train_test_split(
         train_ids, test_size=0.2, random_state=42)
     return train_ids, test_ids
@@ -147,14 +148,16 @@ class DataGenerator(Sequence):
         self.one_hot = one_hot
         if seed >= 0:
             np.random.seed = seed
+        # Shuffle the data and calculate slice offset for initial epoch
         self.on_epoch_end()
 
+    # Gets the number of batches per epoch
     def __len__(self):
-        'Denotes the number of batches per epoch'
         return int(np.floor(len(self.list_IDs) / self.batch_size))
 
+    # Shuffle the data (by shuffling the scan IDs) after each epoch
+    #.. and calculate a new slice offset to use for the next epoch
     def on_epoch_end(self):
-        'Updates indexes after each epoch'
         self.indexes = np.arange(len(self.list_IDs))
         if self.shuffle == True:
             np.random.shuffle(self.indexes)
@@ -195,16 +198,18 @@ class DataGenerator(Sequence):
         
         return labels
 
+    # Generate a batch of pre-processed data, along with ground truth masks if to_fit,
+    #.. using the list of IDs for the volumes to include the slices from.
+    # Batches will contain scan images, with each modality in separate channels, 
+    #.. and ground truth masks will be binary masks indicating the different segment classes.
     def _generate_data(self, list_IDs_temp):
-        """Generates data containing batch_size images, and batch_size masks if to_fit
-        :param list_IDs_temp: list of label ids to load
-        :return: batch of images, and masks if to_fit
-        """
+
         data = np.zeros((self.batch_size*self.slice_range //
                         self.slice_interval, self.dim[0], self.dim[1], self.n_channels))
         labels = np.zeros((self.batch_size*self.slice_range //
                           self.slice_interval, self.dim[0], self.dim[1], self.n_classes))
 
+        # Binary classifier only needs one channel for ground truth mask
         if self.classifier == 'binary':
             labels = np.zeros((self.batch_size*self.slice_range //
                                self.slice_interval, self.dim[0], self.dim[1]))
@@ -212,7 +217,8 @@ class DataGenerator(Sequence):
         # Generate data
         for i, ID in enumerate(list_IDs_temp):
             scan_data = self._load_scan_data(ID)
-            # include an offset so that distribution of slices is more randomized
+            # Include an offset so that distribution of slices is more randomized
+            # Hence need for -1 to not go out of bounds (slice offset should be less than slice interval)
             for j in range(self.slice_range//self.slice_interval - 1):
                 modality_images = []
                 for modality in self.modalities:
@@ -225,7 +231,7 @@ class DataGenerator(Sequence):
                     if self.augment:
                         modality_images, masks = da.perform_data_augmentation(
                             modality_images, masks)
-                    # Generate masks
+                    # Generate masks according to classifier type, resize to specified dimensions
                     masks = cv2.resize(masks, (self.dim[0], self.dim[1]))
                     if self.classifier == 'binary':
                         labels = self._create_single_binary_mask(
@@ -238,11 +244,12 @@ class DataGenerator(Sequence):
                             labels = self._create_binary_mask_per_class(
                                 masks, labels, j, i)
 
+                # Add the slices for each modality to the data array, resized to the specified dimensions
                 for chan, modality in enumerate(self.modalities):
                     data[j + self.slice_range*i//self.slice_interval, :, :,
                          chan] = cv2.resize(modality_images[chan], (self.dim[0], self.dim[1]))
 
-        # Normalize data by dividing by brightest pixel
+        # Normalize batch of data by dividing by brightest pixel in batch
         data /= np.max(data)
 
         if self.to_fit:
@@ -251,20 +258,21 @@ class DataGenerator(Sequence):
         else:
             return data
 
+    # Get the image (and mask if to_fit) data for specified scan, given the scan ID
     def _load_scan_data(self, scan_id):
         def file_path(i): return os.path.join(self.data_path,
                                               '{}_{}'.format(
                                                   self.file_path_prefix, i),
                                               '{}_{}'.format(self.file_path_prefix, i))
-        # Load the .nii files for this scan
-        # modality_files = [file_path(scan_id) + '_{}.nii'.format(modality for modality in MODALITIES)]
 
+        # Store each modality in a dictionary, where the modality type is the key
         scan_data = dict()
         for modality in self.modalities:
             modality_file = file_path(scan_id) + '_{}.nii'.format(modality)
             scan_data[modality] = nib.load(modality_file).get_fdata(
             ) if os.path.exists(modality_file) else None
 
+        #  Include the ground truth mask in the dictionary if to_fit
         if self.to_fit:
             seg_file = file_path(scan_id) + '_seg.nii'
             scan_data['seg'] = nib.load(seg_file).get_fdata(

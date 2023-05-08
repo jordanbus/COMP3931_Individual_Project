@@ -10,16 +10,20 @@ import numpy as np
 import cv2
 
 BATCH_SIZE = 2
+# Size to resize images to
 IMG_SIZE = 128
+
 SEGMENT_CLASSES = {
     0: 'NOT tumor',  # include background
     1: 'NECROTIC and NON-ENHANCING tumor core',
     2: 'Peritumoral EDEMA',
-    3: 'GD-ENHANCING tumor',  # labelled as 4 in dataset - we change to 3
+    3: 'GD-ENHANCING tumor',  # changed from original label 4
 }
 NUM_CLASSES = len(SEGMENT_CLASSES)
 
+# Weights to use for each class in loss function
 CLASS_WEIGHTS = [1, 10, 10, 10]
+
 MODALITIES = ['flair', 't1ce']
 IMG_CHANNELS = len(MODALITIES)
 callbacks = [
@@ -41,6 +45,9 @@ class UNetModel:
                  slice_start=22,
                  seed=-1
                  ):
+        
+        print("Constructing UnetModel.")
+
         self.seed = seed
         self.slice_interval = slice_interval
         self.slice_range = slice_range
@@ -74,27 +81,42 @@ class UNetModel:
                 self.loss = mcm.combined_loss_wrapper(self.class_weights)
 
         self.models_path = models_path
+        # Categorical cross entropy loss requires softmax activation, whereas binary cross entropy requires sigmoid
         self.activation = 'softmax' if loss == 'categorical_crossentropy' else 'sigmoid'
         self.modalities = modalities
-
+        for modality in modalities:
+            if not modality in ['flair', 't1ce', 't1', 't2']:
+                raise ValueError("Invalid modality: " + modality)
+            
         self.train_ids, self.test_ids = get_train_test_ids_completed(
             mri_types=modalities)
         self.validation_ids = get_val_ids_completed(mri_types=modalities)
 
+        # If model index (index of model job) is specified, load the model for that job
         self.model = self.load_model(
             model_index) if model_index is not None else None
 
+    # Compile the model using the loss function and metrics that this class was initialized with.
     def compile_model(self):
+        if self.model is None:
+            raise Exception("Cannot compile model before loading it")
         self.model.compile(loss=self.loss, optimizer=Adam(
             learning_rate=1e-3), metrics=self.metrics)
 
+    # Load the weights from a saved model file.
+    # Trainig is split into jobs which complete a number of epoch each, and model is saved with job index once these are complete.
+    # Specifying job index will load the model from that job.
+    # Can also specify a model path to load weights from.
+    # Set compile to False if you want to recompile the model later with metrics and loss function that this class was intialized with.
     def load_model(self, job_index=None, model_path=None, compile=True):
         if model_path is None and job_index is None:
             raise Exception("Must provide either a model path or a job index")
 
+        # Get the path of the correct job if job index is specified and not model path
         model_path = model_path if model_path is not None else os.path.join(
             self.models_path, "model_job{}".format(job_index))
 
+        # Need to add custom metric and loss functions to custom objects when loading model
         if self.n_classes > 1:
             custom_objects = {
                 "combined_loss": mcm.combined_loss_wrapper(self.class_weights),
@@ -117,11 +139,13 @@ class UNetModel:
         self.model = load_model(
             model_path, custom_objects=custom_objects, compile=compile)
 
-    # Starts or resumes training of the model for job's fraction of total n_epochs
+    # Starts or resumes training of the model for job's portion of total n_epochs
     def train_model(self, job_index, n_jobs, n_epochs, batch_size=BATCH_SIZE):
         for i in range(job_index, n_jobs):
             job_index = i
 
+            # Calculate the start and end epoch for this job
+            # to display the correct number of epochs that the model has been trained for
             start_epoch = job_index * n_epochs // n_jobs
             end_epoch = (job_index + 1) * n_epochs // n_jobs
 
@@ -129,6 +153,7 @@ class UNetModel:
             model_filename = os.path.join(
                 self.models_path, "model_job{}".format(job_index))
             if start_epoch == 0:
+                # Create a new model if this is the first job
                 inputs = Input((IMG_SIZE, IMG_SIZE, self.n_channels))
                 self.model = create_unet(
                     inputs, activation=self.activation, num_classes=self.n_classes, loss=self.loss, metrics=self.metrics)
@@ -136,13 +161,18 @@ class UNetModel:
                 if self.model is None:
                     # Load previous model to continue training
                     load_model(job_index-1)
-
+                    
+        if self.model is None:
+            raise Exception("Unable to load a model to train")
+        
+        # If softmax activation is used, one-hot encode the labels in the data generators
         one_hot = self.activation == 'softmax'
         training_gen = create_training_gen(self.train_ids, one_hot=one_hot, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
                                            modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes,seed=self.seed)
         test_gen = create_test_gen(self.test_ids, one_hot=one_hot, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
                                    modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes, seed=self.seed)
 
+        # Start training
         self.model.fit(training_gen,
                        epochs=end_epoch,
                        steps_per_epoch=len(self.train_ids)/batch_size,
@@ -153,30 +183,39 @@ class UNetModel:
         # Save the model to a file
         self.model.save(model_filename)
 
-    # Evaluates the model on the test set
+    # Evaluates the model on the test set, giving metric scores
     def evaluate_model(self, batch_size=BATCH_SIZE):
         if self.model is None:
-            print("Model not loaded")
+            raise Exception("No model to evaluate")
         test_gen = create_test_gen(self.test_ids, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=self.slice_interval,
                                    modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes, seed=self.seed)
         self.model.evaluate(test_gen, steps=len(self.test_ids)/batch_size)
 
+    # Predicts the segmentation masks of the validation set
     def validation_predictions(self, batch_size=BATCH_SIZE, slice_interval=None):
         if slice_interval is None:
             slice_interval = self.slice_interval
         if self.model is None:
-            print("Model not loaded")
+            raise Exception("No model to predict with")
         val_gen = create_validation_gen(self.validation_ids, slice_range=self.slice_range, slice_start=self.slice_start, slice_interval=slice_interval,
                                         modalities=self.modalities, batch_size=batch_size, dim=(IMG_SIZE, IMG_SIZE), segment_classes=self.segment_classes, seed=self.seed)
         self.model.predict(val_gen, steps=len(self.validation_ids)/batch_size)
 
-    # Predicts the segmentation of the given images
+    # Predicts the segmentation masks of the given images
     def predict(self, images):
+        if self.model is None:
+            raise Exception("No model to predict with")
+        elif images.shape[-1] != self.n_channels:
+            raise Exception("Number of channels in images does not match the model")
+        elif not len(images) > 0:
+            raise Exception("No images to predict")
+        
         X = np.empty(images.shape)
         for i in range(images.shape[0]):
             for chan in range(self.n_channels):
                 X[i, ..., chan] = cv2.resize(
                     images[i, ..., chan], (IMG_SIZE, IMG_SIZE))
 
+        # Normalize the images same way as in data generator, by brightest pixel in the data
         X = X/np.max(X)
         return self.model.predict(X)

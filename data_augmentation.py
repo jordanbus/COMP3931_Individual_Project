@@ -62,17 +62,17 @@ def zoom_image(image, factor):
 
 # Adjust brightness of image by given factor
 def adjust_brightness(image, factor):
-    # Convert image to float32 for arithmetic operations
+    # Convert the image to be of type float32 for arithmetic operations
     image = image.astype(np.float32)
 
-    # Adjust brightness of each channel separately
+    # Adjust brightness of each channel
     for i in range(image.shape[-1]):
         image[..., i] = image[..., i] * factor
 
-    # Clip pixel values to [0, 255]
+    # Clip pixel values to [0, 255] since this is max and min allowed pixel value
     image = np.clip(image, 0, 255)
 
-    # Convert image back to uint8
+    # Convert image pixels back to integers, needed for pixel values to be displayed correctly
     image = image.astype(np.uint8)
 
     return image
