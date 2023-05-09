@@ -13,15 +13,16 @@ TRAIN_DATASET_PATH = '/content/BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingD
 VALIDATION_DATASET_PATH = '/content/BraTS2020_ValidationData/MICCAI_BraTS2020_ValidationData'
 
 
-train_dirs = [f.path for f in os.scandir(TRAIN_DATASET_PATH) if f.is_dir()]
-validation_dirs = [f.path for f in os.scandir(
-    VALIDATION_DATASET_PATH) if f.is_dir()]
+def train_dirs():
+    return [f.path for f in os.scandir(TRAIN_DATASET_PATH) if f.is_dir()]
+def validation_dirs():
+    return[f.path for f in os.scandir(VALIDATION_DATASET_PATH) if f.is_dir()]
 
 # Extract the id of the volume from the directory name
 
 
 def get_id_from_path(path):
-    m = re.search('BraTS20_(Training|Validation)_(\d+)', path)
+    m = re.search(r'BraTS20_(Training|Validation)_(\d+)', path)
     return m.group(2)
 
 # Remove all volumes that don't contain all necessary files specified in look_for
@@ -62,7 +63,7 @@ def _get_ids_completed(dirs, mri_types, train=False):
 
 
 def get_train_test_ids_completed(mri_types, oversample_tumors=False, undersample_bg=False):
-    train_ids = _get_ids_completed(train_dirs, mri_types, train=True)
+    train_ids = _get_ids_completed(train_dirs(), mri_types, train=True)
 
     if undersample_bg or oversample_tumors:
         # Create sorted list of all volumes' fraction of tumour pixels
@@ -93,7 +94,7 @@ def get_train_test_ids_completed(mri_types, oversample_tumors=False, undersample
 
 
 def get_val_ids_completed(mri_types):
-    return _get_ids_completed(validation_dirs, mri_types)
+    return _get_ids_completed(validation_dirs(), mri_types)
 
 
 # Get the fraction of tumour pixels out of all pixels in a volume

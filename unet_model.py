@@ -43,7 +43,8 @@ class UNetModel:
                  slice_interval=5,
                  slice_range=100,
                  slice_start=22,
-                 seed=-1
+                 seed=-1,
+                 dummy_ids=False,
                  ):
         
         print("Constructing UnetModel.")
@@ -84,13 +85,21 @@ class UNetModel:
         # Categorical cross entropy loss requires softmax activation, whereas binary cross entropy requires sigmoid
         self.activation = 'softmax' if loss == 'categorical_crossentropy' else 'sigmoid'
         self.modalities = modalities
+        # Check that modalities are valid
         for modality in modalities:
             if not modality in ['flair', 't1ce', 't1', 't2']:
                 raise ValueError("Invalid modality: " + modality)
-            
-        self.train_ids, self.test_ids = get_train_test_ids_completed(
-            mri_types=modalities)
-        self.validation_ids = get_val_ids_completed(mri_types=modalities)
+        # Check that loss function is valid 
+        if isinstance(loss, str) and loss not in ['categorical_crossentropy', 'binary_crossentropy', 'combined_loss']:
+            raise ValueError("Invalid loss function: " + loss)
+        if not dummy_ids:
+            self.train_ids, self.test_ids = get_train_test_ids_completed(
+                mri_types=modalities)
+            self.validation_ids = get_val_ids_completed(mri_types=modalities)
+        else:
+            self.train_ids = [i for i in range(1, 100)]
+            self.test_ids = [i for i in range(100, 150)]
+            self.validation_ids = [i for i in range(150, 200)]
 
         # If model index (index of model job) is specified, load the model for that job
         self.model = self.load_model(
